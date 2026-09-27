@@ -5,23 +5,36 @@ from collections import defaultdict
 
 import numpy as np
 import pandas as pd
-from rapidfuzz import fuzz
+
+from rapidfuzz import fuzz, process
 from lightgbm import Booster
 
 
 # ============================================================
-# FINAL V7 SUBMISSION
+# V7 FAST FINAL SUBMISSION
 # ============================================================
 
 TEST_DIR = "dataset/test"
 
-S1_FILE = os.path.join(TEST_DIR, "test_source1.tsv")
-S2_FILE = os.path.join(TEST_DIR, "test_source2.tsv")
-S3_FILE = os.path.join(TEST_DIR, "test_source3.tsv")
+S1_FILE = os.path.join(
+    TEST_DIR,
+    "test_source1.tsv"
+)
 
-# IMPORTANT:
-# This is the trained V7 LightGBM model that gave us
-# the 93.13% validation Recall@1.
+S2_FILE = os.path.join(
+    TEST_DIR,
+    "test_source2.tsv"
+)
+
+S3_FILE = os.path.join(
+    TEST_DIR,
+    "test_source3.tsv"
+)
+
+# ------------------------------------------------------------
+# SAME MODEL THAT GAVE 93.13% VALIDATION RECALL@1
+# ------------------------------------------------------------
+
 MODEL_FILE = "v7_lgbm_final.txt"
 
 OUTPUT_DIR = "output"
@@ -36,31 +49,33 @@ CANDIDATE_FILE = os.path.join(
     "candidate_pairs.tsv"
 )
 
-# ------------------------------------------------------------
-# TESTING
-#
-# First run: 10000
-#
-# If it completes without errors:
-# change TEST_ROWS = 0
-# for the FULL test set.
-# ------------------------------------------------------------
 
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+# FIRST RUN:
+# Keep this at 10000.
+#
+# If 10000 rows completes quickly and correctly,
+# change this to 0 for the full test set.
+#
 TEST_ROWS = 10000
 
-# Maximum candidate IDs written per Source-1 row.
 MAX_CANDIDATES = 100
 
-# Maximum candidates actually scored by LightGBM.
 MODEL_CANDIDATES = 40
 
-# Blocking limits.
 MAX_NAME_POSTING = 300
+
 MAX_ADDRESS_POSTING = 300
+
 MAX_TOKEN_POSTING = 300
 
-# Match threshold.
 THRESHOLD = 0.50
+
+# Write output in batches instead of once per row.
+WRITE_BATCH = 1000
 
 
 # ============================================================
@@ -68,6 +83,7 @@ THRESHOLD = 0.50
 # ============================================================
 
 def normalize(value):
+
     if pd.isna(value):
         return ""
 
@@ -89,13 +105,17 @@ def normalize(value):
 
 
 def token_set(text):
+
     if not text:
         return set()
 
-    return set(text.split())
+    return set(
+        text.split()
+    )
 
 
 def useful_tokens(text):
+
     return {
         x
         for x in token_set(text)
@@ -104,6 +124,7 @@ def useful_tokens(text):
 
 
 def first_word(text):
+
     if not text:
         return ""
 
@@ -111,6 +132,7 @@ def first_word(text):
 
 
 def last_word(text):
+
     if not text:
         return ""
 
@@ -118,6 +140,7 @@ def last_word(text):
 
 
 def address_number(text):
+
     if not text:
         return ""
 
@@ -133,6 +156,7 @@ def address_number(text):
 
 
 def jaccard(a, b):
+
     if not a or not b:
         return 0.0
 
@@ -145,16 +169,17 @@ def jaccard(a, b):
 
 
 # ============================================================
-# FEATURE CREATION
+# FEATURE MATRIX
 # ============================================================
 
-def build_features(
+def build_feature_matrix(
     source_name,
     source_address,
     source_country,
     candidate_names,
     candidate_addresses,
-    candidate_countries
+    candidate_countries,
+    model_features
 ):
 
     source_name_tokens = token_set(
@@ -193,13 +218,9 @@ def build_features(
         source_address
     )
 
-    features = []
+    rows = []
 
-    for (
-        cname,
-        caddress,
-        ccountry
-    ) in zip(
+    for cname, caddress, ccountry in zip(
         candidate_names,
         candidate_addresses,
         candidate_countries
@@ -242,7 +263,7 @@ def build_features(
         )
 
         # ----------------------------------------------------
-        # BASIC SIMILARITIES
+        # FUZZY FEATURES
         # ----------------------------------------------------
 
         name_ratio = (
@@ -370,26 +391,26 @@ def build_features(
         )
 
         # ----------------------------------------------------
-        # LENGTH DIFFERENCES
+        # LENGTH FEATURES
         # ----------------------------------------------------
 
         name_length_diff = abs(
-            source_name_len - cname_len
+            source_name_len -
+            cname_len
         )
 
         address_length_diff = abs(
-            source_address_len - caddress_len
+            source_address_len -
+            caddress_len
         )
 
         name_token_count_diff = abs(
-            source_name_token_count
-            -
+            source_name_token_count -
             cname_token_count
         )
 
         address_token_count_diff = abs(
-            source_address_token_count
-            -
+            source_address_token_count -
             caddress_token_count
         )
 
@@ -404,12 +425,6 @@ def build_features(
             and
             source_number == candidate_number
         )
-
-        # ----------------------------------------------------
-        # IMPORTANT:
-        # This dictionary allows us to follow the actual feature
-        # names stored inside the LightGBM model.
-        # ----------------------------------------------------
 
         feature_map = {
 
@@ -477,11 +492,27 @@ def build_features(
                 country_exact
         }
 
-        features.append(
-            feature_map
+        rows.append(
+            [
+                feature_map.get(
+                    feature,
+                    0.0
+                )
+                for feature in model_features
+            ]
         )
 
-    return features
+    if not rows:
+
+        return np.empty(
+            (0, len(model_features)),
+            dtype=np.float32
+        )
+
+    return np.asarray(
+        rows,
+        dtype=np.float32
+    )
 
 
 # ============================================================
@@ -489,10 +520,10 @@ def build_features(
 # ============================================================
 
 print("=" * 70)
-print("FINAL V7 SUBMISSION")
+print("V7 FAST FINAL SUBMISSION")
 print("=" * 70)
 
-print("\nLoading test datasets...")
+print("\nLoading datasets...")
 
 s1 = pd.read_csv(
     S1_FILE,
@@ -664,49 +695,70 @@ print(
 )
 
 name_exact = defaultdict(list)
+
 address_exact = defaultdict(list)
 
 name_prefix3 = defaultdict(list)
+
 name_prefix5 = defaultdict(list)
 
 address_prefix5 = defaultdict(list)
+
 address_suffix5 = defaultdict(list)
 
 first_word_index = defaultdict(list)
+
 last_word_index = defaultdict(list)
 
 country_index = defaultdict(list)
 
 name_token_index = defaultdict(list)
+
 address_token_index = defaultdict(list)
 
+
+# ------------------------------------------------------------
+# BUILD INDEXES
+# ------------------------------------------------------------
+
+index_start = time.time()
 
 for i in range(N):
 
     name = candidate_names[i]
+
     address = candidate_addresses[i]
+
     country = candidate_countries[i]
 
     # Exact name
     if name:
-        name_exact[name].append(i)
+
+        name_exact[name].append(
+            i
+        )
 
     # Exact address
     if address:
-        address_exact[address].append(i)
+
+        address_exact[address].append(
+            i
+        )
 
     # Name prefixes
     if len(name) >= 3:
+
         name_prefix3[
             name[:3]
         ].append(i)
 
     if len(name) >= 5:
+
         name_prefix5[
             name[:5]
         ].append(i)
 
-    # Address prefixes/suffix
+    # Address prefix/suffix
     if len(address) >= 5:
 
         address_prefix5[
@@ -718,45 +770,54 @@ for i in range(N):
         ].append(i)
 
     # Words
-    fw = first_word(name)
-    lw = last_word(name)
+    fw = first_word(
+        name
+    )
+
+    lw = last_word(
+        name
+    )
 
     if fw:
+
         first_word_index[
             fw
         ].append(i)
 
     if lw:
+
         last_word_index[
             lw
         ].append(i)
 
     # Country
     if country:
+
         country_index[
             country
         ].append(i)
 
-    # Tokens
+    # Name tokens
     for token in useful_tokens(name):
 
-        if len(
-            name_token_index[token]
-        ) < MAX_TOKEN_POSTING:
+        posting = name_token_index[
+            token
+        ]
 
-            name_token_index[
-                token
-            ].append(i)
+        if len(posting) < MAX_TOKEN_POSTING:
 
+            posting.append(i)
+
+    # Address tokens
     for token in useful_tokens(address):
 
-        if len(
-            address_token_index[token]
-        ) < MAX_TOKEN_POSTING:
+        posting = address_token_index[
+            token
+        ]
 
-            address_token_index[
-                token
-            ].append(i)
+        if len(posting) < MAX_TOKEN_POSTING:
+
+            posting.append(i)
 
 
 print(
@@ -779,6 +840,11 @@ print(
     len(address_token_index)
 )
 
+print(
+    "Index build time:",
+    f"{time.time() - index_start:.1f}s"
+)
+
 
 # ============================================================
 # LOAD MODEL
@@ -792,16 +858,15 @@ model = Booster(
     model_file=MODEL_FILE
 )
 
+model_features = model.feature_name()
+
 print(
     "Model loaded!"
 )
 
 print(
-    "Model features:"
-)
-
-print(
-    model.feature_name()
+    "Model features:",
+    model_features
 )
 
 
@@ -873,6 +938,7 @@ def generate_candidates(
         )
 
         if len(pool) >= 500:
+
             break
 
     # --------------------------------------------------------
@@ -905,6 +971,7 @@ def generate_candidates(
         )
 
         if len(pool) >= 500:
+
             break
 
     # --------------------------------------------------------
@@ -1015,6 +1082,7 @@ os.makedirs(
 if os.path.exists(
     MATCH_FILE
 ):
+
     os.remove(
         MATCH_FILE
     )
@@ -1022,6 +1090,7 @@ if os.path.exists(
 if os.path.exists(
     CANDIDATE_FILE
 ):
+
     os.remove(
         CANDIDATE_FILE
 )
@@ -1033,7 +1102,7 @@ if os.path.exists(
 
 print()
 print("=" * 70)
-print("V7 FINAL INFERENCE")
+print("V7 FAST INFERENCE")
 print("=" * 70)
 
 print(
@@ -1056,18 +1125,28 @@ print(
     THRESHOLD
 )
 
+print(
+    "Output batch size:",
+    WRITE_BATCH
+)
+
 print("=" * 70)
 
 
 start_time = time.time()
 
-match_header = False
-candidate_header = False
-
 total = len(s1)
 
 processed = 0
 
+match_buffer = []
+
+candidate_buffer = []
+
+
+# ============================================================
+# FAST INFERENCE LOOP
+# ============================================================
 
 for row in s1.itertuples(
     index=False
@@ -1078,8 +1157,11 @@ for row in s1.itertuples(
     )
 
     source_name = row.name_norm
+
     source_address = row.address_norm
+
     source_country = row.country_norm
+
 
     # --------------------------------------------------------
     # CANDIDATES
@@ -1091,8 +1173,9 @@ for row in s1.itertuples(
         source_country
     )
 
+
     # --------------------------------------------------------
-    # KEEP ONLY SOURCE 2 / SOURCE 3
+    # SOURCE 2 / SOURCE 3 ONLY
     # --------------------------------------------------------
 
     pool = [
@@ -1105,49 +1188,70 @@ for row in s1.itertuples(
         )
     ]
 
+
     # --------------------------------------------------------
-    # QUICK RANKING
+    # FAST QUICK RANKING
+    #
+    # OLD:
+    #   Python loop + fuzz.ratio() for every candidate
+    #
+    # NEW:
+    #   RapidFuzz C implementation + parallel workers
     # --------------------------------------------------------
 
     if len(pool) > MODEL_CANDIDATES:
 
-        quick = []
-
-        for idx in pool:
-
-            nr = fuzz.ratio(
-                source_name,
-                candidate_names[idx]
-            )
-
-            ar = fuzz.ratio(
-                source_address,
-                candidate_addresses[idx]
-            )
-
-            score = (
-                0.55 * nr
-                +
-                0.45 * ar
-            )
-
-            quick.append(
-                (
-                    score,
-                    idx
-                )
-            )
-
-        quick.sort(
-            reverse=True
+        pool_array = np.asarray(
+            pool,
+            dtype=np.int32
         )
 
+        pool_names = [
+            candidate_names[i]
+            for i in pool_array
+        ]
+
+        pool_addresses = [
+            candidate_addresses[i]
+            for i in pool_array
+        ]
+
+        name_scores = process.cdist(
+            [source_name],
+            pool_names,
+            scorer=fuzz.ratio,
+            workers=-1
+        )[0]
+
+        address_scores = process.cdist(
+            [source_address],
+            pool_addresses,
+            scorer=fuzz.ratio,
+            workers=-1
+        )[0]
+
+        quick_scores = (
+            0.55 * name_scores
+            +
+            0.45 * address_scores
+        )
+
+        # Same ordering principle as the old
+        # score-descending / index-descending sort.
+        order = np.lexsort(
+            (
+                -pool_array,
+                -quick_scores
+            )
+        )
+
+        top_order = order[
+            :MODEL_CANDIDATES
+        ]
+
         shortlist = [
-            idx
-            for _, idx
-            in quick[
-                :MODEL_CANDIDATES
-            ]
+            int(pool_array[i])
+            for i in top_order
         ]
 
     else:
@@ -1174,33 +1278,19 @@ for row in s1.itertuples(
         for i in shortlist
     ]
 
-    feature_maps = build_features(
+    X = build_feature_matrix(
         source_name,
         source_address,
         source_country,
         candidate_names_short,
         candidate_addresses_short,
-        candidate_countries_short
+        candidate_countries_short,
+        model_features
     )
 
-    model_features = model.feature_name()
-
-    X = np.asarray(
-        [
-            [
-                fmap.get(
-                    feature,
-                    0.0
-                )
-                for feature in model_features
-            ]
-            for fmap in feature_maps
-        ],
-        dtype=np.float32
-    )
 
     # --------------------------------------------------------
-    # PREDICTION
+    # LIGHTGBM PREDICTION
     # --------------------------------------------------------
 
     if len(shortlist) > 0:
@@ -1209,14 +1299,25 @@ for row in s1.itertuples(
             X
         )
 
-        ranked = sorted(
-            zip(
-                shortlist,
-                scores
-            ),
-            key=lambda x: x[1],
-            reverse=True
+        scores = np.asarray(
+            scores
         )
+
+        # Descending score.
+        # Stable sort preserves candidate order
+        # when scores are tied.
+        order = np.argsort(
+            -scores,
+            kind="stable"
+        )
+
+        ranked = [
+            (
+                shortlist[i],
+                float(scores[i])
+            )
+            for i in order
+        ]
 
     else:
 
@@ -1231,12 +1332,12 @@ for row in s1.itertuples(
 
     for idx, score in ranked:
 
-        if float(score) >= THRESHOLD:
+        if score >= THRESHOLD:
 
             matches.append(
                 (
                     candidate_ids[idx],
-                    float(score)
+                    score
                 )
             )
 
@@ -1252,8 +1353,7 @@ for row in s1.itertuples(
         if (
             source_name != ""
             and
-            source_name
-            ==
+            source_name ==
             candidate_names[idx]
         ):
 
@@ -1264,8 +1364,7 @@ for row in s1.itertuples(
         if (
             source_address != ""
             and
-            source_address
-            ==
+            source_address ==
             candidate_addresses[idx]
         ):
 
@@ -1273,12 +1372,15 @@ for row in s1.itertuples(
                 candidate_ids[idx]
             )
 
+
+    matched_existing = {
+        x[0]
+        for x in matches
+    }
+
     for entity_id in exact_ids:
 
-        if not any(
-            x[0] == entity_id
-            for x in matches
-        ):
+        if entity_id not in matched_existing:
 
             matches.append(
                 (
@@ -1295,7 +1397,7 @@ for row in s1.itertuples(
 
 
     # --------------------------------------------------------
-    # FINAL CANDIDATE LIST
+    # FINAL 100 CANDIDATES
     # --------------------------------------------------------
 
     candidate_ranked = [
@@ -1303,17 +1405,14 @@ for row in s1.itertuples(
         for idx, _ in ranked
     ]
 
-    # Add remaining candidates if needed
     seen = set(
         candidate_ranked
     )
 
     for idx in pool:
 
-        if (
-            len(candidate_ranked)
-            >= MAX_CANDIDATES
-        ):
+        if len(candidate_ranked) >= MAX_CANDIDATES:
+
             break
 
         if idx not in seen:
@@ -1336,75 +1435,85 @@ for row in s1.itertuples(
 
 
     # --------------------------------------------------------
-    # WRITE MATCH
+    # BUFFER OUTPUT
     # --------------------------------------------------------
 
-    match_df = pd.DataFrame(
-        [
-            {
-                "source1_entity_id":
-                    source_id,
+    match_buffer.append(
+        {
+            "source1_entity_id":
+                source_id,
 
-                "matched_entity_ids":
-                    ",".join(
-                        x[0]
-                        for x in matches
-                    )
-            }
-        ]
+            "matched_entity_ids":
+                ",".join(
+                    x[0]
+                    for x in matches
+                )
+        }
     )
 
-    match_df.to_csv(
-        MATCH_FILE,
-        sep="\t",
-        index=False,
-        mode="a",
-        header=not match_header
+    candidate_buffer.append(
+        {
+            "source1_entity_id":
+                source_id,
+
+            "candidate_entity_ids":
+                ",".join(
+                    candidate_ids_output
+                )
+        }
     )
-
-    match_header = True
-
-
-    # --------------------------------------------------------
-    # WRITE CANDIDATES
-    # --------------------------------------------------------
-
-    candidate_df = pd.DataFrame(
-        [
-            {
-                "source1_entity_id":
-                    source_id,
-
-                "candidate_entity_ids":
-                    ",".join(
-                        candidate_ids_output
-                    )
-            }
-        ]
-    )
-
-    candidate_df.to_csv(
-        CANDIDATE_FILE,
-        sep="\t",
-        index=False,
-        mode="a",
-        header=not candidate_header
-    )
-
-    candidate_header = True
 
 
     processed += 1
 
 
     # --------------------------------------------------------
-    # PROGRESS
+    # WRITE EVERY 1000 ROWS
     # --------------------------------------------------------
 
     if (
-        processed % 500
-        == 0
+        len(match_buffer)
+        >= WRITE_BATCH
     ):
+
+        pd.DataFrame(
+            match_buffer
+        ).to_csv(
+            MATCH_FILE,
+            sep="\t",
+            index=False,
+            mode="a",
+            header=(
+                not os.path.exists(
+                    MATCH_FILE
+                )
+            )
+        )
+
+        pd.DataFrame(
+            candidate_buffer
+        ).to_csv(
+            CANDIDATE_FILE,
+            sep="\t",
+            index=False,
+            mode="a",
+            header=(
+                not os.path.exists(
+                    CANDIDATE_FILE
+                )
+            )
+        )
+
+        match_buffer.clear()
+
+        candidate_buffer.clear()
+
+
+    # --------------------------------------------------------
+    # PROGRESS
+    # --------------------------------------------------------
+
+    if processed % 500 == 0:
 
         elapsed = (
             time.time()
@@ -1413,8 +1522,7 @@ for row in s1.itertuples(
         )
 
         rate = (
-            processed
-            /
+            processed /
             max(
                 elapsed,
                 0.001
@@ -1422,14 +1530,12 @@ for row in s1.itertuples(
         )
 
         remaining = (
-            total
-            -
+            total -
             processed
         )
 
         eta_seconds = (
-            remaining
-            /
+            remaining /
             max(
                 rate,
                 0.001
@@ -1448,15 +1554,58 @@ for row in s1.itertuples(
 
 
 # ============================================================
+# FLUSH REMAINING OUTPUT
+# ============================================================
+
+if match_buffer:
+
+    pd.DataFrame(
+        match_buffer
+    ).to_csv(
+        MATCH_FILE,
+        sep="\t",
+        index=False,
+        mode="a",
+        header=(
+            not os.path.exists(
+                MATCH_FILE
+            )
+        )
+    )
+
+if candidate_buffer:
+
+    pd.DataFrame(
+        candidate_buffer
+    ).to_csv(
+        CANDIDATE_FILE,
+        sep="\t",
+        index=False,
+        mode="a",
+        header=(
+            not os.path.exists(
+                CANDIDATE_FILE
+            )
+        )
+    )
+
+
+# ============================================================
 # FINAL CHECK
 # ============================================================
+
+elapsed_total = (
+    time.time()
+    -
+    start_time
+)
 
 print()
 print("=" * 70)
 print("FINAL OUTPUT CHECK")
 print("=" * 70)
 
-matches = pd.read_csv(
+matches_out = pd.read_csv(
     MATCH_FILE,
     sep="\t",
     dtype=str,
@@ -1472,7 +1621,7 @@ candidates_out = pd.read_csv(
 
 print(
     "matching_results rows:",
-    len(matches)
+    len(matches_out)
 )
 
 print(
@@ -1487,18 +1636,27 @@ print(
 
 print(
     "Duplicate Source-1 IDs:",
-    matches["source1_entity_id"].duplicated().sum()
+    matches_out[
+        "source1_entity_id"
+    ].duplicated().sum()
 )
 
 print(
     "Empty candidate rows:",
     (
-        candidates_out["candidate_entity_ids"]
-        == ""
+        candidates_out[
+            "candidate_entity_ids"
+        ] == ""
     ).sum()
 )
 
+print(
+    "Total inference time:",
+    f"{elapsed_total / 60:.2f} min"
+)
+
 print()
+
 print(
     "Saved:",
     MATCH_FILE
@@ -1511,5 +1669,5 @@ print(
 
 print()
 print("=" * 70)
-print("FINAL V7 SUBMISSION GENERATION COMPLETE")
+print("V7 FAST SUBMISSION GENERATION COMPLETE")
 print("=" * 70)

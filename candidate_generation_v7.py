@@ -460,7 +460,7 @@ print("Building country + prefix index...")
 
 country_prefix_index = defaultdict(list)
 
-for idx, row in candidates.iterrows():
+for idx, row in []:
 
     country = row["country_norm"]
     name = row["name_norm"]
