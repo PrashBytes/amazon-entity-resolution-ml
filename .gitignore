@@ -1,0 +1,31 @@
+# Dataset
+dataset/
+
+# Generated candidate/result files
+*.tsv
+*.csv
+
+# SQLite / FTS indexes
+*.db
+*.sqlite
+*.sqlite3
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environments
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
